@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Typolish URL Picker</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="container">
+    <!-- ヘッダー -->
+    <header class="header">
+      <div class="logo">
+        <span class="logo-text">Typolish</span>
+        <span class="logo-sub">URL Picker</span>
+      </div>
+    </header>
+
+    <!-- 検索バー -->
+    <div class="search-wrap">
+      <span class="search-icon">🔍</span>
+      <input
+        type="text"
+        id="search"
+        class="search-input"
+        placeholder="タイトル・URLで絞り込み..."
+        autocomplete="off"
+      />
+    </div>
+
+    <!-- タブ一覧 -->
+    <div class="tabs-wrap">
+      <ul id="tab-list" class="tab-list"></ul>
+      <p id="empty" class="empty" style="display:none;">Typolish以外のタブが見つかりません</p>
+    </div>
+
+    <!-- 送信ボタン -->
+    <div class="footer">
+      <button id="send-btn" class="send-btn" disabled>
+        URLを送信 (<span id="count">0</span>件)
+      </button>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
