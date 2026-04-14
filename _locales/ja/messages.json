@@ -1,8 +1,8 @@
 {
   "extName": {
-    "message": "Typolish - URL Picker"
+    "message": "Typolish - Page Capture"
   },
   "extDescription": {
-    "message": "開いているタブのURLをTypolishにワンクリックで送信"
+    "message": "開いているタブのフルページスクリーンショットをキャプチャし、Typolishに直接送信"
   }
 }

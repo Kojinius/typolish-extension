@@ -1,38 +1,28 @@
-// popup.js — タブ取得・フィルタ・UI・送信ロジック
+// popup.js — タブ選択 → background.js にキャプチャ指示 → 即閉じ
+// ポップアップはタブ切り替えで閉じるため、重い処理は background.js に委譲
 
-const TYPOLISH_PATTERNS = [
-  /typolish\.com/,
-  /localhost:3000/,
-];
+const TYPOLISH_PATTERNS = [/typolish\.com/, /localhost:3000/];
 
 const BLOCKED_PATTERNS = [
-  /^chrome:/,
-  /^chrome-extension:/,
-  /^about:/,
-  /^edge:/,
-  /^moz-extension:/,
-  /^devtools:/,
+  /^chrome:/, /^chrome-extension:/, /^about:/,
+  /^edge:/, /^moz-extension:/, /^devtools:/,
 ];
 
-/** タブがTypolishかどうか判定 */
 function isTypolishTab(url) {
   return TYPOLISH_PATTERNS.some((p) => p.test(url));
 }
 
-/** 送信対象から除外するURLか判定 */
 function isBlockedUrl(url) {
   if (!url) return true;
   return BLOCKED_PATTERNS.some((p) => p.test(url)) || isTypolishTab(url);
 }
 
-/** ファビコンURLを安全に取得 */
 function getFaviconUrl(tab) {
   if (tab.favIconUrl && !tab.favIconUrl.startsWith('chrome://')) {
     return tab.favIconUrl;
   }
   try {
-    const origin = new URL(tab.url).origin;
-    return `${origin}/favicon.ico`;
+    return `${new URL(tab.url).origin}/favicon.ico`;
   } catch {
     return null;
   }
@@ -41,11 +31,9 @@ function getFaviconUrl(tab) {
 let allTabs = [];
 let selectedUrls = new Set();
 
-/** タブ一覧をレンダリング */
 function renderTabs(tabs) {
   const list = document.getElementById('tab-list');
   const empty = document.getElementById('empty');
-
   list.innerHTML = '';
 
   if (tabs.length === 0) {
@@ -59,28 +47,23 @@ function renderTabs(tabs) {
     li.className = 'tab-item' + (selectedUrls.has(tab.url) ? ' checked' : '');
     li.dataset.url = tab.url;
 
-    // チェックボックス
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
     checkbox.className = 'tab-checkbox';
     checkbox.checked = selectedUrls.has(tab.url);
     checkbox.addEventListener('change', () => onToggle(tab.url, checkbox.checked, li));
 
-    // ファビコン
     const faviconUrl = getFaviconUrl(tab);
     let faviconEl;
     if (faviconUrl) {
       faviconEl = document.createElement('img');
       faviconEl.src = faviconUrl;
       faviconEl.className = 'tab-favicon';
-      faviconEl.onerror = () => {
-        faviconEl.replaceWith(makeFallbackFavicon());
-      };
+      faviconEl.onerror = () => faviconEl.replaceWith(makeFallbackFavicon());
     } else {
       faviconEl = makeFallbackFavicon();
     }
 
-    // タブ情報
     const info = document.createElement('div');
     info.className = 'tab-info';
 
@@ -94,12 +77,10 @@ function renderTabs(tabs) {
 
     info.appendChild(title);
     info.appendChild(url);
-
     li.appendChild(checkbox);
     li.appendChild(faviconEl);
     li.appendChild(info);
 
-    // 行クリックでチェックボックスをトグル
     li.addEventListener('click', (e) => {
       if (e.target === checkbox) return;
       checkbox.checked = !checkbox.checked;
@@ -113,7 +94,7 @@ function renderTabs(tabs) {
 function makeFallbackFavicon() {
   const div = document.createElement('div');
   div.className = 'tab-favicon-fallback';
-  div.textContent = '🌐';
+  div.textContent = '\uD83C\uDF10';
   return div;
 }
 
@@ -136,7 +117,6 @@ function updateSendBtn() {
   btn.disabled = n === 0;
 }
 
-/** 検索フィルタ */
 function filterTabs(query) {
   if (!query) return allTabs;
   const q = query.toLowerCase();
@@ -145,57 +125,28 @@ function filterTabs(query) {
   );
 }
 
-/** Typolishタブを探してURLを送信 */
-async function sendUrls(urls) {
-  const tabs = await chrome.tabs.query({});
-  const typolishTab = tabs.find((t) => t.url && isTypolishTab(t.url));
+// ── 初期化 ──
 
-  if (!typolishTab?.id) {
-    alert('Typolishのページが見つかりません。typolish.com を開いてください。');
-    return false;
-  }
-
-  try {
-    await chrome.tabs.sendMessage(typolishTab.id, {
-      type: 'TYPOLISH_URL_PICKED',
-      urls,
-    });
-  } catch {
-    // content-script が未注入の場合（ページリロード直後等）は無視
-    console.warn('[Typolish] sendMessage failed — content script may not be ready');
-  }
-
-  // Typolishタブをアクティブに
-  await chrome.tabs.update(typolishTab.id, { active: true });
-  return true;
-}
-
-// 初期化
 document.addEventListener('DOMContentLoaded', async () => {
   const tabs = await chrome.tabs.query({});
   allTabs = tabs.filter((t) => t.url && !isBlockedUrl(t.url));
   renderTabs(allTabs);
 
-  // 検索
   document.getElementById('search').addEventListener('input', (e) => {
     renderTabs(filterTabs(e.target.value));
   });
 
-  // 送信
   document.getElementById('send-btn').addEventListener('click', async () => {
-    const btn = document.getElementById('send-btn');
-    const urls = [...selectedUrls];
-    btn.disabled = true;
-    btn.textContent = '送信中...';
+    const tabs = allTabs.filter((t) => selectedUrls.has(t.url));
+    if (tabs.length === 0) return;
 
-    const ok = await sendUrls(urls);
-    if (ok) {
-      btn.textContent = '送信しました ✓';
-      btn.classList.add('success');
-      setTimeout(() => window.close(), 800);
-    } else {
-      btn.disabled = false;
-      updateSendBtn();
-    }
+    // background.js にキャプチャ指示（ポップアップは閉じてOK）
+    await chrome.runtime.sendMessage({
+      type: 'CAPTURE_TABS',
+      tabs: tabs.map((t) => ({ id: t.id, url: t.url, title: t.title })),
+    });
+
+    // 即閉じ — キャプチャ進捗はバッジで表示される
+    window.close();
   });
 });

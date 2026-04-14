@@ -1,8 +1,8 @@
 {
   "extName": {
-    "message": "Typolish - URL Picker"
+    "message": "Typolish - Page Capture"
   },
   "extDescription": {
-    "message": "Send open tab URLs to Typolish with one click"
+    "message": "Capture full-page screenshots of open tabs and send directly to Typolish"
   }
 }

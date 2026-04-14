@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Typolish URL Picker</title>
+  <title>Typolish Capture</title>
   <link rel="stylesheet" href="popup.css" />
 </head>
 <body>
@@ -12,13 +12,13 @@
     <header class="header">
       <div class="logo">
         <span class="logo-text">Typolish</span>
-        <span class="logo-sub">URL Picker</span>
+        <span class="logo-sub">Page Capture</span>
       </div>
     </header>
 
     <!-- 検索バー -->
-    <div class="search-wrap">
-      <span class="search-icon">🔍</span>
+    <div class="search-wrap" id="search-wrap">
+      <span class="search-icon">&#x1F50D;</span>
       <input
         type="text"
         id="search"
@@ -29,15 +29,24 @@
     </div>
 
     <!-- タブ一覧 -->
-    <div class="tabs-wrap">
+    <div class="tabs-wrap" id="tabs-wrap">
       <ul id="tab-list" class="tab-list"></ul>
       <p id="empty" class="empty" style="display:none;">Typolish以外のタブが見つかりません</p>
     </div>
 
-    <!-- 送信ボタン -->
+    <!-- キャプチャ進捗 -->
+    <div class="progress-wrap" id="progress-wrap" style="display:none;">
+      <div class="progress-text" id="progress-text">キャプチャ準備中...</div>
+      <div class="progress-bar-track">
+        <div class="progress-bar-fill" id="progress-bar"></div>
+      </div>
+      <div class="progress-detail" id="progress-detail"></div>
+    </div>
+
+    <!-- フッター -->
     <div class="footer">
       <button id="send-btn" class="send-btn" disabled>
-        URLを送信 (<span id="count">0</span>件)
+        キャプチャして送信 (<span id="count">0</span>件)
       </button>
     </div>
   </div>
