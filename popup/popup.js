@@ -155,10 +155,15 @@ async function sendUrls(urls) {
     return false;
   }
 
-  await chrome.tabs.sendMessage(typolishTab.id, {
-    type: 'TYPOLISH_URL_PICKED',
-    urls,
-  });
+  try {
+    await chrome.tabs.sendMessage(typolishTab.id, {
+      type: 'TYPOLISH_URL_PICKED',
+      urls,
+    });
+  } catch {
+    // content-script が未注入の場合（ページリロード直後等）は無視
+    console.warn('[Typolish] sendMessage failed — content script may not be ready');
+  }
 
   // Typolishタブをアクティブに
   await chrome.tabs.update(typolishTab.id, { active: true });
