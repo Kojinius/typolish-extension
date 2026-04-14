@@ -151,7 +151,7 @@ async function sendUrls(urls) {
   const typolishTab = tabs.find((t) => t.url && isTypolishTab(t.url));
 
   if (!typolishTab?.id) {
-    alert('Typolishのページが見つかりません。typolish.com または localhost:3000 を開いてください。');
+    alert('Typolishのページが見つかりません。typolish.com を開いてください。');
     return false;
   }
 
