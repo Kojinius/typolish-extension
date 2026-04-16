@@ -89,7 +89,7 @@ async function captureFullPage(tab) {
 
   const { scrollHeight, clientHeight, clientWidth, devicePixelRatio: dpr } = dims;
 
-  // アニメーション凍結（スライドショー等がキャプチャ中に動くのを防止）
+  // アニメーション凍結
   await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     func: () => {
@@ -111,24 +111,59 @@ async function captureFullPage(tab) {
 
   // 各ストリップをキャプチャ
   const strips = [];
-  for (const y of uniquePositions) {
+  for (let i = 0; i < uniquePositions.length; i++) {
+    const y = uniquePositions[i];
+
     await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: (scrollY) => window.scrollTo(0, scrollY),
       args: [y],
     });
+
+    // ページJSの処理完了を待つ（IO/scroll handler等）
     await sleep(350);
+
+    // 2番目以降: スクロール＋JS処理完了後にfixed/sticky要素を検出して非表示
+    if (i >= 1) {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: () => {
+          document.querySelectorAll('*').forEach((el) => {
+            const pos = getComputedStyle(el).position;
+            if (pos === 'fixed' || pos === 'sticky') {
+              if (!el.hasAttribute('data-typolish-fixed')) {
+                el.setAttribute('data-typolish-fixed', el.style.visibility || '');
+              }
+              el.style.setProperty('visibility', 'hidden', 'important');
+            }
+          });
+          // 強制リフロー — スタイル変更をレンダーツリーに確定
+          void document.documentElement.offsetHeight;
+        },
+      });
+      // リペイント完了を待ってからキャプチャ
+      await sleep(50);
+    }
 
     const dataUrl = await chrome.tabs.captureVisibleTab(undefined, { format: 'png' });
     await sleep(650); // MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND 制限回避
     strips.push({ dataUrl, y });
   }
 
-  // アニメーション凍結解除 + トップに戻す
+  // 凍結解除 + fixed/sticky復元 + トップに戻す
   await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     func: () => {
       document.getElementById('__typolish_freeze')?.remove();
+      document.querySelectorAll('[data-typolish-fixed]').forEach((el) => {
+        const orig = el.getAttribute('data-typolish-fixed');
+        if (orig) {
+          el.style.visibility = orig;
+        } else {
+          el.style.removeProperty('visibility');
+        }
+        el.removeAttribute('data-typolish-fixed');
+      });
       window.scrollTo(0, 0);
     },
   });
