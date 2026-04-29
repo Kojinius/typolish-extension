@@ -148,9 +148,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (tabs.length === 0) return;
 
     // background.js にキャプチャ指示（ポップアップは閉じてOK）
+    // 2026-04-30 windowId を必ず送る — PWA フォーカス時に captureVisibleTab(undefined)
+    // が PWA 画面を撮ってしまう問題対策
     await chrome.runtime.sendMessage({
       type: 'CAPTURE_TABS',
-      tabs: tabs.map((t) => ({ id: t.id, url: t.url, title: t.title })),
+      tabs: tabs.map((t) => ({ id: t.id, windowId: t.windowId, url: t.url, title: t.title })),
     });
 
     // 即閉じ — キャプチャ進捗はバッジで表示される

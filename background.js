@@ -75,6 +75,17 @@ async function captureAndSend(tabs) {
 }
 
 async function captureFullPage(tab) {
+  // 2026-04-30 PWA フォーカス時のキャプチャ取り違え対策
+  // captureVisibleTab(undefined) は「現在フォーカスされてるウィンドウ」を撮る。
+  // PWA 起動中だと PWA 画面がそこ → 必ず target tab の windowId にフォーカス +
+  // captureVisibleTab に明示的に windowId を渡す。
+  if (tab.windowId !== undefined) {
+    try {
+      await chrome.windows.update(tab.windowId, { focused: true });
+    } catch (e) {
+      console.warn('[capture] windows.update failed:', e.message);
+    }
+  }
   await chrome.tabs.update(tab.id, { active: true });
   await sleep(500);
 
@@ -152,7 +163,8 @@ async function captureFullPage(tab) {
       await sleep(50);
     }
 
-    const dataUrl = await chrome.tabs.captureVisibleTab(undefined, { format: 'png' });
+    // 2026-04-30 PWA 取り違え対策 — undefined だとフォーカス窓を撮るので明示指定
+    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
     await sleep(650); // MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND 制限回避
     strips.push({ dataUrl, y });
   }
