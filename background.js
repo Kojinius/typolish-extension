@@ -26,9 +26,16 @@ async function captureAndSend(tabs) {
   }
 
   // Typolishタブを探して送信
+  // 2026-04-29 dev は port 3001 で動作するため 3000/3001 両方許可
   const allTabs = await chrome.tabs.query({});
   const typolishTab = allTabs.find(
-    (t) => t.url && (/typolish\.com/.test(t.url) || /localhost:3000/.test(t.url))
+    (t) => t.url && (
+      /typolish\.com/.test(t.url) ||
+      /localhost:3000/.test(t.url) ||
+      /localhost:3001/.test(t.url) ||
+      /127\.0\.0\.1:3000/.test(t.url) ||
+      /127\.0\.0\.1:3001/.test(t.url)
+    )
   );
 
   const validCaptures = results.filter((r) => r.image);

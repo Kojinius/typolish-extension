@@ -1,7 +1,14 @@
 // popup.js — タブ選択 → background.js にキャプチャ指示 → 即閉じ
 // ポップアップはタブ切り替えで閉じるため、重い処理は background.js に委譲
 
-const TYPOLISH_PATTERNS = [/typolish\.com/, /localhost:3000/];
+// 2026-04-29 dev は port 3001 で動作するため 3000/3001 両方許可
+const TYPOLISH_PATTERNS = [
+  /typolish\.com/,
+  /localhost:3000/,
+  /localhost:3001/,
+  /127\.0\.0\.1:3000/,
+  /127\.0\.0\.1:3001/,
+];
 
 const BLOCKED_PATTERNS = [
   /^chrome:/, /^chrome-extension:/, /^about:/,
