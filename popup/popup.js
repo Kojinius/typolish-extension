@@ -10,9 +10,13 @@ const TYPOLISH_PATTERNS = [
   /127\.0\.0\.1:3001/,
 ];
 
+// 2026-04-30 Chrome ウェブストアは scripting / captureVisibleTab が
+// "The extensions gallery cannot be scripted." で拒否されるため除外
 const BLOCKED_PATTERNS = [
   /^chrome:/, /^chrome-extension:/, /^about:/,
   /^edge:/, /^moz-extension:/, /^devtools:/,
+  /^https?:\/\/chrome\.google\.com\/webstore/,
+  /^https?:\/\/chromewebstore\.google\.com/,
 ];
 
 function isTypolishTab(url) {
