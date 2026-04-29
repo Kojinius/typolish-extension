@@ -63,6 +63,14 @@ async function captureAndSend(tabs) {
     } catch (e) {
       console.error('[capture] inject FAILED:', e.message);
     }
+    // 2026-04-30 PWA / 別ウィンドウから戻すためにウィンドウもフォーカス
+    if (typolishTab.windowId !== undefined) {
+      try {
+        await chrome.windows.update(typolishTab.windowId, { focused: true });
+      } catch (e) {
+        console.warn('[capture] windows.update typolish failed:', e.message);
+      }
+    }
     await chrome.tabs.update(typolishTab.id, { active: true });
   } else {
     console.warn(`[capture] skipped: typolishTab=${!!typolishTab}, validCaptures=${validCaptures.length}`);
