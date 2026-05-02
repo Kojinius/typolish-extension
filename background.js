@@ -1,9 +1,19 @@
 // background.js — Service Worker: フルページキャプチャ → Typolishに自律送信
 // ポップアップはタブ切り替え時に閉じるため、全処理をここで完結させる
+//
+// v2.1.0（2026-05-01）: HTML プルーフ生成（RENDER_PROOF）対応
+// 設計書: documents/design/zip-upload-and-extension-capture.md §3.2 / §4.3
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'CAPTURE_TABS') {
     captureAndSend(msg.tabs);
+    sendResponse({ started: true });
+  }
+  // v2.1.0: HTML プルーフ生成（content-script からの依頼）
+  if (msg.type === 'RENDER_PROOF') {
+    handleRenderProof(msg, sender).catch((e) => {
+      console.error('[render-proof] FATAL', e);
+    });
     sendResponse({ started: true });
   }
   return true;
@@ -115,13 +125,20 @@ async function captureFullPage(tab) {
 
   const { scrollHeight, clientHeight, clientWidth, devicePixelRatio: dpr } = dims;
 
-  // アニメーション凍結
+  // アニメーション凍結 + scrollbar 非表示化
+  // 2026-05-01: scrollbar 17px が popup の inner content 幅を縮める → ライブ iframe と
+  // 折り返し位置が 1-2 文字ズレる問題を回避するため scrollbar を完全に非表示化
+  // （スクロールは window.scrollTo で動かすため scrollbar UI は不要）
   await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     func: () => {
       const style = document.createElement('style');
       style.id = '__typolish_freeze';
-      style.textContent = '*, *::before, *::after { animation-play-state: paused !important; transition: none !important; }';
+      style.textContent = [
+        '*, *::before, *::after { animation-play-state: paused !important; transition: none !important; }',
+        'html { scrollbar-width: none !important; }',
+        'html::-webkit-scrollbar, body::-webkit-scrollbar { display: none !important; width: 0 !important; height: 0 !important; }',
+      ].join('\n');
       document.head.appendChild(style);
     },
   });
@@ -237,4 +254,223 @@ async function blobToDataUrl(blob) {
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+// ─────────────────────────────────────────────────────────────
+// v2.1.0: HTML プルーフ生成（RENDER_PROOF）
+// 設計書 §3.2: viewport 別ポップアップウィンドウで proofUrl を開いて captureFullPage 実行
+// 各 viewport 完了後 callbackUrl に POST、最後に TYPOLISH_RENDER_PROOF_DONE で
+// content-script 経由で Web アプリに通知する。
+// ─────────────────────────────────────────────────────────────
+
+async function handleRenderProof(msg, sender) {
+  const { proofId, versionId, proofUrl, callbackUrl, authToken, viewports } = msg;
+  const typolishTabId = sender?.tab?.id; // 通知の戻り先
+
+  const screenshots = {};
+  const errors = [];
+  let renderWindowId = null;
+  let renderTabId = null;
+
+  try {
+    // 1. ポップアップウィンドウ作成（最初の viewport サイズで仮）
+    //    後で outer/inner 差分を計測して厳密リサイズする
+    const firstVp = viewports[0];
+    const win = await chrome.windows.create({
+      url: appendAuthToUrl(proofUrl, authToken),
+      type: 'popup',
+      focused: true,
+      width: firstVp.width + 32, // 仮の余白（後で正確にリサイズ）
+      height: firstVp.height + 100,
+      left: 0,
+      top: 0,
+    });
+    renderWindowId = win.id;
+    renderTabId = win.tabs?.[0]?.id;
+    if (!renderTabId) throw new Error('render tab open failed');
+
+    // 2. 初回ロード待ち
+    await waitForTabComplete(renderTabId, 30_000);
+    await sleep(500);
+
+    // 3. scrollbar 永続非表示 inject（innerWidth 計測前に実行）
+    //    これをやる前に innerWidth を測ると scrollbar 17px が紛れて windows.update の補正がズレる
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: renderTabId },
+        func: () => {
+          const style = document.createElement('style');
+          style.id = '__typolish_persistent_hide_scrollbar';
+          style.textContent = [
+            'html, body { scrollbar-width: none !important; -ms-overflow-style: none !important; }',
+            'html::-webkit-scrollbar, body::-webkit-scrollbar, *::-webkit-scrollbar {',
+            '  display: none !important; width: 0 !important; height: 0 !important;',
+            '}',
+          ].join('\n');
+          document.head.appendChild(style);
+        },
+      });
+      await sleep(150); // reflow 反映
+    } catch (e) {
+      console.warn('[render-proof] persistent scrollbar-hide inject failed:', e.message);
+    }
+
+    // 4. ウィンドウ outer/inner 差分を計測（chrome UI 境界のみ、scrollbar は既に消えている）
+    //    これを viewport.width に加算して windows.update すると inner width = viewport.width
+    let widthDelta = 16;  // フォールバック
+    let heightDelta = 80; // フォールバック
+    try {
+      const [{ result: dims }] = await chrome.scripting.executeScript({
+        target: { tabId: renderTabId },
+        func: () => ({
+          outerWidth: window.outerWidth,
+          innerWidth: window.innerWidth,
+          outerHeight: window.outerHeight,
+          innerHeight: window.innerHeight,
+          clientWidth: document.documentElement.clientWidth,
+        }),
+      });
+      if (dims) {
+        widthDelta = Math.max(0, dims.outerWidth - dims.innerWidth);
+        heightDelta = Math.max(0, dims.outerHeight - dims.innerHeight);
+        console.log('[render-proof] dims', dims, 'widthDelta=', widthDelta, 'heightDelta=', heightDelta);
+      }
+    } catch (e) {
+      console.warn('[render-proof] dims measurement failed, using fallback:', e.message);
+    }
+
+    // 4. 各 viewport で正確リサイズ → fonts.ready 待ち → captureFullPage
+    for (const vp of viewports) {
+      try {
+        await chrome.windows.update(renderWindowId, {
+          width: vp.width + widthDelta,
+          height: vp.height + heightDelta,
+        });
+        await sleep(700); // resize 反映 + reflow
+        // フォントロード完了を待つ（行間ズレ防止）
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId: renderTabId },
+            func: async () => {
+              if (document.fonts && document.fonts.ready) {
+                await document.fonts.ready;
+              }
+            },
+          });
+        } catch {}
+        await sleep(200);
+
+        const result = await captureFullPage({ id: renderTabId, windowId: renderWindowId, url: proofUrl, title: '' });
+        if (result.image) {
+          screenshots[vp.name] = result.image;
+        } else {
+          errors.push({ viewport: vp.name, reason: 'no image' });
+        }
+      } catch (e) {
+        errors.push({ viewport: vp.name, reason: e.message || 'capture failed' });
+        console.error(`[render-proof] viewport=${vp.name} failed:`, e);
+      }
+    }
+
+    // 4. callback URL に POST（status は成否で判定）
+    const successCount = Object.keys(screenshots).length;
+    const status = successCount === 0 ? 'failed' : (errors.length > 0 ? 'partial' : 'success');
+    const callbackPayload = { token: authToken, projectId: parseProjectIdFromProofUrl(proofUrl), proofId, versionId, status, screenshots, errors };
+
+    try {
+      const res = await fetch(callbackUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(callbackPayload),
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        console.error(`[render-proof] callback HTTP ${res.status}: ${body}`);
+        errors.push({ viewport: 'callback', reason: `HTTP ${res.status}` });
+      }
+    } catch (e) {
+      console.error('[render-proof] callback FAILED:', e);
+      errors.push({ viewport: 'callback', reason: e.message || 'callback failed' });
+    }
+
+    // 5. typolish タブに DONE 通知
+    if (typolishTabId !== undefined) {
+      try {
+        await chrome.tabs.sendMessage(typolishTabId, {
+          type: 'TYPOLISH_RENDER_PROOF_DONE',
+          proofId,
+          versionId,
+          status,
+          errors,
+        });
+      } catch (e) {
+        console.warn('[render-proof] DONE notify failed:', e.message);
+      }
+    }
+  } catch (e) {
+    console.error('[render-proof] handler FATAL:', e);
+    if (typolishTabId !== undefined) {
+      try {
+        await chrome.tabs.sendMessage(typolishTabId, {
+          type: 'TYPOLISH_RENDER_PROOF_DONE',
+          proofId,
+          versionId,
+          status: 'failed',
+          errors: [{ viewport: 'all', reason: e.message || 'fatal' }],
+        });
+      } catch {}
+    }
+  } finally {
+    // 6. ポップアップウィンドウクローズ + Typolish タブにフォーカス
+    if (renderWindowId !== null) {
+      try { await chrome.windows.remove(renderWindowId); } catch {}
+    }
+    if (typolishTabId !== undefined) {
+      try {
+        const tab = await chrome.tabs.get(typolishTabId);
+        if (tab.windowId !== undefined) await chrome.windows.update(tab.windowId, { focused: true });
+        await chrome.tabs.update(typolishTabId, { active: true });
+      } catch {}
+    }
+  }
+}
+
+function appendAuthToUrl(url, token) {
+  // v2.1.0: 拡張機能ポップアップは新規タブナビゲーションのため、Typolish の Cookie が未発行の状態
+  // で proofUrl にアクセスする可能性がある。catchall Route が ?token= で受け入れる HMAC 認証経路
+  // を持つので、そこに token を流す。
+  if (!token) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}token=${encodeURIComponent(token)}`;
+}
+
+function parseProjectIdFromProofUrl(proofUrl) {
+  // /api/proof-content/{projectId}/{proofId}/{versionId}/{path}
+  const match = /\/api\/proof-content\/([^/]+)\//.exec(proofUrl);
+  return match ? decodeURIComponent(match[1]) : '';
+}
+
+async function waitForTabComplete(tabId, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      reject(new Error('tab load timeout'));
+    }, timeoutMs);
+    const listener = (id, changeInfo) => {
+      if (id === tabId && changeInfo.status === 'complete') {
+        clearTimeout(timer);
+        chrome.tabs.onUpdated.removeListener(listener);
+        resolve();
+      }
+    };
+    chrome.tabs.onUpdated.addListener(listener);
+    // すでに complete の可能性
+    chrome.tabs.get(tabId).then((tab) => {
+      if (tab.status === 'complete') {
+        clearTimeout(timer);
+        chrome.tabs.onUpdated.removeListener(listener);
+        resolve();
+      }
+    }).catch(() => {});
+  });
 }
