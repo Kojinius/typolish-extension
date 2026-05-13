@@ -147,9 +147,54 @@ async function captureFullPage(tab) {
         void document.documentElement.offsetHeight; // 強制リフロー
       },
     });
-    await sleep(100); // reflow 反映待ち
   } catch (e) {
     console.warn('[capture] dynamic iframe placeholder inject failed:', e.message);
+  }
+
+  // 2026-05-13 23:30:00 claude-opus-4-7[1m] セッションターン数：-
+  // v2.2.0 追加: DOM 安定化待ち
+  // 設計書 §1.1 問題 1+2 対処：HTML 内の JS 非同期 fetch（Apps Script 等）が
+  // scrollHeight 初回測定後に DOM 書き換えると strip ステッチで重複/欠落が発生する。
+  // document.fonts.ready + MutationObserver で「最終 mutation から 1.5 秒以上変化なし」
+  // を idle 判定し、Apps Script fetch + table 描画完了まで待つ。最大 10 秒で諦める
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => new Promise((resolve) => {
+        const IDLE_MS = 1500;
+        const HARD_TIMEOUT_MS = 10000;
+        const start = Date.now();
+        const fontsReady = (document.fonts && document.fonts.ready) || Promise.resolve();
+        Promise.resolve(fontsReady).then(() => {
+          let lastMutation = Date.now();
+          const observer = new MutationObserver(() => { lastMutation = Date.now(); });
+          observer.observe(document.documentElement, {
+            childList: true,
+            subtree: true,
+            characterData: true,
+            attributes: true,
+            attributeFilter: ['style', 'class', 'src', 'srcset'],
+          });
+          const check = () => {
+            const now = Date.now();
+            if (now - start > HARD_TIMEOUT_MS) {
+              observer.disconnect();
+              resolve({ reason: 'hard-timeout', elapsed: now - start });
+              return;
+            }
+            if (now - lastMutation > IDLE_MS) {
+              observer.disconnect();
+              resolve({ reason: 'idle', elapsed: now - start });
+              return;
+            }
+            setTimeout(check, 200);
+          };
+          setTimeout(check, 300);
+        });
+      }),
+    });
+  } catch (e) {
+    console.warn('[capture] DOM stabilization wait failed:', e.message);
   }
 
   // ページ寸法を取得
