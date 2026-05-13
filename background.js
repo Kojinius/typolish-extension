@@ -3,6 +3,10 @@
 //
 // v2.1.0（2026-05-01）: HTML プルーフ生成（RENDER_PROOF）対応
 // 設計書: documents/design/zip-upload-and-extension-capture.md §3.2 / §4.3
+//
+// 2026-05-13 19:30:00 claude-opus-4-7[1m] セッションターン数：-
+// v2.2.0: Calendar/Form/Maps iframe を Placeholder 静的置換（決定論性確保）
+// 設計書: typolish/documents/design/html-proof-dynamic-iframe-static.md §5
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'CAPTURE_TABS') {
@@ -106,6 +110,92 @@ async function captureFullPage(tab) {
   }
   await chrome.tabs.update(tab.id, { active: true });
   await sleep(500);
+
+  // 2026-05-13 19:30:00 claude-opus-4-7[1m] セッションターン数：-
+  // v2.2.0: 動的 iframe（Calendar / Form / Maps）を Placeholder 静的置換
+  // scrollHeight 計測の手前で inject → forced reflow まで完了させる。順序を逆にすると
+  // iframe の遅延ロードで scrollHeight がブレて strip ステッチがズレる
+  // 設計書: typolish/documents/design/html-proof-dynamic-iframe-static.md §5.1
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => {
+        const placeholders = [
+          { selector: 'iframe[src*="calendar.google.com/calendar/embed"]', label: 'Google Calendar', tag: 'calendar' },
+          { selector: 'iframe[src*="docs.google.com/forms"]', label: 'Google Form', tag: 'form' },
+          { selector: 'iframe[src*="google.com/maps"], iframe[src*="maps.google"]', label: 'Google Maps', tag: 'maps' },
+        ];
+        placeholders.forEach(({ selector, label, tag }) => {
+          document.querySelectorAll(selector).forEach((iframe) => {
+            const rect = iframe.getBoundingClientRect();
+            const w = Math.round(rect.width) || 400;
+            const h = Math.round(rect.height) || 300;
+            const ph = document.createElement('div');
+            ph.setAttribute('data-typolish-placeholder', tag);
+            ph.style.cssText =
+              'width:' + w + 'px !important; height:' + h + 'px !important;' +
+              'background:#f8f4ec; border:1px solid #d4c4a8; border-radius:4px;' +
+              'display:flex !important; flex-direction:column;' +
+              'align-items:center; justify-content:center;' +
+              'font-family:sans-serif; color:#7a6850; box-sizing:border-box;';
+            ph.innerHTML =
+              '<p style="margin:0;font-size:13px;font-weight:600">' + label + '</p>' +
+              '<p style="margin:2px 0 0;font-size:11px;opacity:0.6">校正では静的表示</p>';
+            iframe.parentNode.replaceChild(ph, iframe);
+          });
+        });
+        void document.documentElement.offsetHeight; // 強制リフロー
+      },
+    });
+  } catch (e) {
+    console.warn('[capture] dynamic iframe placeholder inject failed:', e.message);
+  }
+
+  // 2026-05-13 23:30:00 claude-opus-4-7[1m] セッションターン数：-
+  // v2.2.0 追加: DOM 安定化待ち
+  // 設計書 §1.1 問題 1+2 対処：HTML 内の JS 非同期 fetch（Apps Script 等）が
+  // scrollHeight 初回測定後に DOM 書き換えると strip ステッチで重複/欠落が発生する。
+  // document.fonts.ready + MutationObserver で「最終 mutation から 1.5 秒以上変化なし」
+  // を idle 判定し、Apps Script fetch + table 描画完了まで待つ。最大 10 秒で諦める
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => new Promise((resolve) => {
+        const IDLE_MS = 1500;
+        const HARD_TIMEOUT_MS = 10000;
+        const start = Date.now();
+        const fontsReady = (document.fonts && document.fonts.ready) || Promise.resolve();
+        Promise.resolve(fontsReady).then(() => {
+          let lastMutation = Date.now();
+          const observer = new MutationObserver(() => { lastMutation = Date.now(); });
+          observer.observe(document.documentElement, {
+            childList: true,
+            subtree: true,
+            characterData: true,
+            attributes: true,
+            attributeFilter: ['style', 'class', 'src', 'srcset'],
+          });
+          const check = () => {
+            const now = Date.now();
+            if (now - start > HARD_TIMEOUT_MS) {
+              observer.disconnect();
+              resolve({ reason: 'hard-timeout', elapsed: now - start });
+              return;
+            }
+            if (now - lastMutation > IDLE_MS) {
+              observer.disconnect();
+              resolve({ reason: 'idle', elapsed: now - start });
+              return;
+            }
+            setTimeout(check, 200);
+          };
+          setTimeout(check, 300);
+        });
+      }),
+    });
+  } catch (e) {
+    console.warn('[capture] DOM stabilization wait failed:', e.message);
+  }
 
   // ページ寸法を取得
   const [{ result: dims }] = await chrome.scripting.executeScript({
