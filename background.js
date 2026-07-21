@@ -7,6 +7,11 @@
 // 2026-05-13 19:30:00 claude-opus-4-7[1m] セッションターン数：-
 // v2.2.0: Calendar/Form/Maps iframe を Placeholder 静的置換（決定論性確保）
 // 設計書: typolish/documents/design/html-proof-dynamic-iframe-static.md §5
+//
+// 2026-07-21 21:34:16 claude-fable-5 セッションターン数：7
+// v2.3.0: 校正画像を R2 署名 PUT で直アップロード（Vercel 4.5MB 上限 413 の根治）+
+// callback 失敗を DONE status に反映。旧サーバへは base64 自動フォールバック。
+// 設計書: typolish/documents/design/extension-screenshot-payload-limit-fix.md §5
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'CAPTURE_TABS') {
@@ -353,11 +358,46 @@ function sleep(ms) {
 // content-script 経由で Web アプリに通知する。
 // ─────────────────────────────────────────────────────────────
 
+// 2026-07-21 21:34:16 claude-fable-5 セッションターン数：7
+// v2.3.0: 校正画像を R2 へ署名 PUT で直アップロードし、callback には storagePath 参照だけを送る。
+// 旧実装（3 viewport の base64 を 1 本の JSON で callback へ POST）は Vercel 関数の
+// リクエスト本文上限 4.5MB を超えると 413 で全滅していた（2026-07-21 本番実測・縦長 HTML で再現）。
+// サーバが古く /api/extension/upload-url が 404 の場合は従来の base64 形式へ自動フォールバック。
+// 設計書: typolish/documents/design/extension-screenshot-payload-limit-fix.md §5
+async function uploadScreenshotToR2(origin, authToken, ids, viewportName, dataUrl) {
+  const blob = await (await fetch(dataUrl)).blob();
+  const res = await fetch(`${origin}/api/extension/upload-url`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      token: authToken,
+      projectId: ids.projectId,
+      proofId: ids.proofId,
+      versionId: ids.versionId,
+      viewport: viewportName,
+      contentType: blob.type,
+    }),
+  });
+  if (res.status === 404) return { legacyServer: true }; // 旧サーバ（route 未デプロイ）
+  if (!res.ok) throw new Error(`upload-url HTTP ${res.status}`);
+  const { uploadUrl, storagePath } = await res.json();
+  const put = await fetch(uploadUrl, {
+    method: 'PUT',
+    headers: { 'Content-Type': blob.type },
+    body: blob,
+  });
+  if (!put.ok) throw new Error(`R2 PUT HTTP ${put.status}`);
+  return { storagePath };
+}
+
 async function handleRenderProof(msg, sender) {
   const { proofId, versionId, proofUrl, callbackUrl, authToken, viewports } = msg;
   const typolishTabId = sender?.tab?.id; // 通知の戻り先
 
   const screenshots = {};
+  // v2.3.0: viewport → storagePath（R2 直アップロード成功分）。legacyServer 検知で base64 送信へ切替
+  const uploadedPaths = {};
+  let legacyServer = false;
   const errors = [];
   let renderWindowId = null;
   let renderTabId = null;
@@ -453,6 +493,31 @@ async function handleRenderProof(msg, sender) {
         const result = await captureFullPage({ id: renderTabId, windowId: renderWindowId, url: proofUrl, title: '' });
         if (result.image) {
           screenshots[vp.name] = result.image;
+          // 2026-07-21 21:34:16 claude-fable-5 セッションターン数：7
+          // v2.3.0: viewport ごとに R2 直アップロードを試行。旧サーバ（upload-url 404）検知後はスキップし
+          // 従来の base64 一括送信へフォールバック。アップロード失敗は該当 viewport のみ errors 計上
+          // （callback で storagePath 参照が無い viewport はサーバ側 partial 規約に乗る）。
+          if (!legacyServer) {
+            try {
+              const projectId = parseProjectIdFromProofUrl(proofUrl);
+              const up = await uploadScreenshotToR2(
+                new URL(callbackUrl).origin,
+                authToken,
+                { projectId, proofId, versionId },
+                vp.name,
+                result.image,
+              );
+              if (up.legacyServer) {
+                legacyServer = true;
+                console.warn('[render-proof] upload-url 404 → legacy base64 callback にフォールバック');
+              } else {
+                uploadedPaths[vp.name] = up.storagePath;
+              }
+            } catch (e) {
+              errors.push({ viewport: vp.name, reason: `upload failed: ${e.message || 'unknown'}` });
+              console.error(`[render-proof] upload viewport=${vp.name} failed:`, e);
+            }
+          }
         } else {
           errors.push({ viewport: vp.name, reason: 'no image' });
         }
@@ -463,10 +528,27 @@ async function handleRenderProof(msg, sender) {
     }
 
     // 4. callback URL に POST（status は成否で判定）
+    // 2026-07-21 21:34:16 claude-fable-5 セッションターン数：7
+    // v2.3.0: 全キャプチャ済み viewport のアップロードが揃っていれば storagePath 参照形式（数百 byte）。
+    // 旧サーバ or アップロード不成立分がある場合は従来の base64 形式（4.5MB 上限内なら従来どおり成功）。
     const successCount = Object.keys(screenshots).length;
-    const status = successCount === 0 ? 'failed' : (errors.length > 0 ? 'partial' : 'success');
-    const callbackPayload = { token: authToken, projectId: parseProjectIdFromProofUrl(proofUrl), proofId, versionId, status, screenshots, errors };
+    let status = successCount === 0 ? 'failed' : (errors.length > 0 ? 'partial' : 'success');
+    // viewport 単位で参照形式と base64 を混在可（サーバは viewport ごとに両形式を受理）。
+    // アップロード成功分は数百 byte の参照、失敗分のみ base64 → 本文サイズを常に最小化。
+    const callbackScreenshots = legacyServer
+      ? screenshots
+      : Object.fromEntries(
+          Object.entries(screenshots).map(([vp, dataUrl]) =>
+            uploadedPaths[vp] ? [vp, { storagePath: uploadedPaths[vp] }] : [vp, dataUrl],
+          ),
+        );
+    const callbackPayload = { token: authToken, projectId: parseProjectIdFromProofUrl(proofUrl), proofId, versionId, status, screenshots: callbackScreenshots, errors };
 
+    // 2026-07-21 21:34:16 claude-fable-5 セッションターン数：7
+    // v2.3.0: callback の成否を DONE status に反映する。旧実装は callback が 413/500 でも
+    // 'success' を通知しており、Web 側が Cloud Run フォールバックに入れず「無言で画像が出ない」
+    // 状態になっていた（2026-07-21 本番実測の二次欠陥）。
+    let callbackOk = false;
     try {
       const res = await fetch(callbackUrl, {
         method: 'POST',
@@ -477,10 +559,15 @@ async function handleRenderProof(msg, sender) {
         const body = await res.text().catch(() => '');
         console.error(`[render-proof] callback HTTP ${res.status}: ${body}`);
         errors.push({ viewport: 'callback', reason: `HTTP ${res.status}` });
+      } else {
+        callbackOk = true;
       }
     } catch (e) {
       console.error('[render-proof] callback FAILED:', e);
       errors.push({ viewport: 'callback', reason: e.message || 'callback failed' });
+    }
+    if (!callbackOk) {
+      status = 'failed'; // サーバに 1 枚も届いていない＝Web 側はフォールバックへ
     }
 
     // 5. typolish タブに DONE 通知
