@@ -36,3 +36,5 @@
 **Server 側対応**（typolish・同日実装）: `/api/extension/upload-url` 新設 + `render-callback` の参照形式受理（期待キー完全一致 + R2 HEAD read-back）。
 
 **Tested**: `node --check` 構文 OK。typolish 側 vitest 1027 全 pass（render-callback 両形式 + upload-url 防御列の 13 テスト新規）。実機 E2E はサーバデプロイ後に unpacked v2.3.0 で実施予定。
+
+**Post-release (2026-07-21)**: ボスが v2.3.0（unpacked）で実機確認済み（縦長 HTML の 3 viewport 表示まで確認＝413 根治クローズ）。Store 申請用 `typolish-extension-v2.3.0.zip` を作成（v2.2.0 zip と同一構成 11 ファイル・repo 直下）し、ボスが Chrome Web Store へ申請手続き中。権限変更なし。
