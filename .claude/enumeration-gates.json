@@ -1,0 +1,9 @@
+{
+  "_readme": [
+    "2026-07-27 20:13:53 claude-opus-5[1m] セッションターン数：5 — 列挙ゲートの登録簿（Stop フックが読む）。",
+    "gates が空の場合は _why_empty が必須。理由の無い空登録はブロックされる（＝判断と放置を区別するため）。",
+    "再発クラスが観測されたら harness を作って gates へ足す（audit-closure §2b 原則0）。"
+  ],
+  "gates": [],
+  "_why_empty": "実測 2026-07-27: 最終コミット 2026-07-21（5 日前）／src=無・scripts=無・package.json=無・firebase.json=無・firestore.rules=無。単体の配布物（拡張／連携アプリ）で、共有 ACL や複数経路の write を持たない。再発クラスが観測されたら harness を作って登録する。"
+}
